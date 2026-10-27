@@ -22,6 +22,36 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks());
 
 describe("payment service", () => {
+  test("reuses a keyed payment during processing and after completion", async () => {
+    const { service, wait, resolve } = setup();
+    const payment = service.createPayment(100, "NGN", "order-1");
+    expect(service.createPayment(100, "NGN", "order-1")).toMatchObject({ id: payment.id, status: "processing" });
+    resolve();
+    await Promise.resolve();
+    expect(service.createPayment(100, "NGN", "order-1")).toMatchObject({ id: payment.id, status: "completed" });
+    expect(wait).toHaveBeenCalledTimes(1);
+  });
+
+  test("rejects conflicting key reuse without processing another payment", () => {
+    const { service, wait } = setup();
+    service.createPayment(100, "NGN", "order-1");
+    expect(() => service.createPayment(200, "NGN", "order-1")).toThrow(expect.objectContaining({ status: 409, code: "IDEMPOTENCY_CONFLICT" }));
+    expect(wait).toHaveBeenCalledTimes(1);
+  });
+
+  test("new keys and omitted keys create separate payments", () => {
+    const { service, wait } = setup();
+    const payments = ["order-1", "order-2", undefined, undefined].map(key => service.createPayment(100, "NGN", key));
+    expect(new Set(payments.map(payment => payment.id)).size).toBe(4);
+    expect(wait).toHaveBeenCalledTimes(4);
+  });
+
+  test.each(["", "   ", "a".repeat(201)])("rejects an invalid idempotency key", (key) => {
+    const { service, wait } = setup();
+    expect(() => service.createPayment(100, "NGN", key)).toThrow(expect.objectContaining({ status: 400 }));
+    expect(wait).not.toHaveBeenCalled();
+  });
+
   test("creates a pending snapshot and starts processing without waiting", () => {
     const { service, wait } = setup();
     const payment = service.createPayment(150000, "NGN");
@@ -98,6 +128,18 @@ describe("payment service", () => {
 });
 
 describe("payment HTTP API", () => {
+  test("matching concurrent retries reuse the payment and changed details conflict", async () => {
+    const { app, wait } = setup();
+    const responses = await Promise.all([1, 2].map(() => request(app).post("/api/payments").set("Idempotency-Key", "order-1").send(payload)));
+    expect(responses.map(res => res.status)).toEqual([202, 202]);
+    expect(responses[0].body.id).toBe(responses[1].body.id);
+    expect(responses[0].headers.location).toBe(responses[1].headers.location);
+    expect(wait).toHaveBeenCalledTimes(1);
+    const conflict = await request(app).post("/api/payments").set("Idempotency-Key", "order-1").send({ ...payload, amountMinor: 200 });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
   test("POST creates a payment without an idempotency header", async () => {
     const { app } = setup();
     const res = await request(app).post("/api/payments").send(payload);

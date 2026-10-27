@@ -19,7 +19,11 @@ export function createPaymentRouter(service: PaymentService): Router {
 
   router.post("/", (req, res) => {
     const body = createPaymentSchema.parse(req.body);
-    const payment = service.createPayment(body.amountMinor, body.currency);
+    const payment = service.createPayment(
+      body.amountMinor,
+      body.currency,
+      req.get("Idempotency-Key"),
+    );
     res.status(202).location(`/api/payments/${payment.id}`).json(payment);
   });
 

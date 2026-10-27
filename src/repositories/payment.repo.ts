@@ -2,10 +2,18 @@ import { Payment, PaymentStatus } from "../types/payment";
 
 export class PaymentRepository {
   private readonly payments = new Map<string, Payment>();
+  private readonly idempotencyKeys = new Map<string, string>();
 
-  create(payment: Payment): Payment {
+  create(payment: Payment, idempotencyKey?: string): Payment {
     this.payments.set(payment.id, { ...payment });
+    if (idempotencyKey !== undefined)
+      this.idempotencyKeys.set(idempotencyKey, payment.id);
     return { ...payment };
+  }
+
+  findByIdempotencyKey(key: string): Payment | undefined {
+    const id = this.idempotencyKeys.get(key);
+    return id === undefined ? undefined : this.findById(id);
   }
 
   findById(id: string): Payment | undefined {

@@ -43,9 +43,13 @@ curl -i -X POST http://localhost:8900/api/payments \
   -d '{"amountMinor":150000,"currency":"NGN"}'
 ```
 
-`amountMinor` must be a positive safe integer in kobo; `150000` represents NGN 1,500. `currency` must be `NGN`. Unknown body fields are rejected. Each POST creates a new payment; no idempotency header is required or implemented.
+`amountMinor` must be a positive safe integer in kobo; `150000` represents NGN 1,500. `currency` must be `NGN`. Unknown body fields are rejected.
 
-The response contains `id`, `amountMinor`, `currency`, `status`, `createdAt`, and `updatedAt`. IDs use Node's `crypto.randomUUID()` and timestamps are ISO strings. The POST response contains the initial pending snapshot; processing starts immediately in the background.
+To retry safely, include an optional `Idempotency-Key` header, such as `Idempotency-Key: order-123`. Keys must be nonblank and at most 200 characters. Repeating the same key and payment details returns the existing payment with its current status, `202`, and the same `Location` header, without starting processing again. Reusing a key with different details returns `409` with code `IDEMPOTENCY_CONFLICT`. A new key, or omitting the header, creates a new payment.
+
+Keys are shared across this service instance and kept in memory without expiry. They are lost on restart. Lookup and creation happen synchronously, so overlapping retries cannot create duplicates within this single process.
+
+The response contains `id`, `amountMinor`, `currency`, `status`, `createdAt`, and `updatedAt`. IDs use Node's `crypto.randomUUID()` and timestamps are ISO strings. A newly created payment's POST response contains the initial pending snapshot; processing starts immediately in the background.
 
 Retrieve a payment using the ID returned by POST:
 
@@ -90,7 +94,7 @@ Errors share a consistent JSON shape:
 
 - `400`: invalid input or malformed JSON.
 - `404`: unknown payment or route.
-- `409`: invalid status transition.
+- `409`: invalid status transition or conflicting idempotency key reuse.
 - `413`: JSON body exceeds 16 KiB.
 - `500`: unexpected service error, with a generic public message.
 
@@ -134,4 +138,4 @@ npm test -- --testNamePattern='payment service'
 
 ## Limitations
 
-All state is lost on restart. Storage has no capacity limit, and background work has no durable queue or crash recovery. There is no authentication, rate limiting, or cross-process coordination. Every POST creates a new payment. These are deliberate simplifications for the assessment; a real payment service would require durable storage, idempotency, access control, and recovery of unfinished work.
+All state, including idempotency keys, is lost on restart. Storage has no capacity limit, and background work has no durable queue or crash recovery. There is no authentication, rate limiting, or cross-process coordination. Idempotency only applies to requests carrying the same key within this process. These are deliberate simplifications for the assessment; a real payment service would require durable storage with atomic idempotency enforcement, access control, and recovery of unfinished work.

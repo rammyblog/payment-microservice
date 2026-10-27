@@ -18,7 +18,11 @@ export class PaymentService {
     private readonly wait: () => Promise<void> = () => setTimeout(3000),
   ) {}
 
-  createPayment(amountMinor: number, currency: "NGN"): Payment {
+  createPayment(
+    amountMinor: number,
+    currency: "NGN",
+    idempotencyKey?: string,
+  ): Payment {
     if (
       !Number.isSafeInteger(amountMinor) ||
       amountMinor <= 0 ||
@@ -26,15 +30,42 @@ export class PaymentService {
     ) {
       throw new ApiError(400, "VALIDATION_ERROR", "Invalid payment parameters");
     }
+    if (idempotencyKey !== undefined) {
+      if (!idempotencyKey.trim() || idempotencyKey.length > 200) {
+        throw new ApiError(
+          400,
+          "VALIDATION_ERROR",
+          "Idempotency-Key must contain 1 to 200 characters",
+        );
+      }
+      const existing = this.repository.findByIdempotencyKey(idempotencyKey);
+      if (existing) {
+        if (
+          existing.amountMinor !== amountMinor ||
+          existing.currency !== currency
+        ) {
+          throw new ApiError(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "Idempotency-Key was already used with different payment details",
+          );
+        }
+        return existing;
+      }
+    }
+    // Lookup and creation are synchronous, before background processing can yield.
     const now = new Date().toISOString();
-    const payment = this.repository.create({
-      id: randomUUID(),
-      amountMinor,
-      currency,
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    });
+    const payment = this.repository.create(
+      {
+        id: randomUUID(),
+        amountMinor,
+        currency,
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      },
+      idempotencyKey,
+    );
     void this.processPayment(payment.id).catch(() => {
       logger.error("payment.processing_error", { paymentId: payment.id });
     });
