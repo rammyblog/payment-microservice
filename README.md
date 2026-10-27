@@ -32,7 +32,7 @@ npm start
 | --- | --- | --- |
 | POST | `/api/payments` | Create a payment; return `202` and a `Location` header |
 | GET | `/api/payments/:id` | Return the payment and current status |
-| PATCH | `/api/payments/:id/status` | Start a pending payment (administrative simulation) |
+| PATCH | `/api/payments/:id/status` | Start processing a pending payment |
 | GET | `/health` | Return service health |
 
 Create a payment:
@@ -46,11 +46,11 @@ curl -i -X POST http://localhost:8900/api/payments \
 
 `amountMinor` must be a positive safe integer in kobo; `150000` represents NGN 1,500. `currency` must be `NGN`. Unknown body fields are rejected.
 
-Every creation request requires an `Idempotency-Key` header, such as `Idempotency-Key: order-123`. Keys must be nonblank and at most 200 characters. Repeating the same key and payment details returns the existing payment with its current status, `202`, and the same `Location` header, without starting processing again. Reusing a key with different details returns `409` with code `IDEMPOTENCY_CONFLICT`. A new key creates a new payment. Missing or invalid keys return `400`.
+Every creation request requires an `Idempotency-Key` header, such as `Idempotency-Key: order-123`. Keys must be nonblank and at most 200 characters. Repeating the same key and payment details returns the existing payment with its current status, `202`, and the same `Location` header, without starting or restarting processing. Reusing a key with different details returns `409` with code `IDEMPOTENCY_CONFLICT`. A new key creates a new payment. Missing or invalid keys return `400`.
 
 Keys are shared across this service instance and kept in memory without expiry. They are lost on restart. Lookup and creation happen synchronously, so overlapping retries cannot create duplicates within this single process.
 
-The response contains `id`, `amountMinor`, `currency`, `status`, `createdAt`, and `updatedAt`. IDs use Node's `crypto.randomUUID()` and timestamps are ISO strings. A newly created payment's POST response contains the initial pending snapshot; processing starts immediately in the background.
+The response contains `id`, `amountMinor`, `currency`, `status`, `createdAt`, and `updatedAt`. IDs use Node's `crypto.randomUUID()` and timestamps are ISO strings. A newly created payment stays pending until PATCH starts processing. POST retries never start processing.
 
 Retrieve a payment using the ID returned by POST:
 
@@ -58,7 +58,7 @@ Retrieve a payment using the ID returned by POST:
 curl http://localhost:8900/api/payments/<id>
 ```
 
-Start a pending payment through the administrative simulation endpoint (normally POST has already started it, so this returns `409`):
+Start processing the payment using the ID returned by POST:
 
 ```sh
 curl -i -X PATCH http://localhost:8900/api/payments/<id>/status \
@@ -79,11 +79,11 @@ pending → processing → completed
                      ↘ failed
 ```
 
-Processing awaits a three-second timer and then completes. There is no random success probability. An exception during the asynchronous operation marks the payment failed and is logged. Tests inject a controlled wait function to demonstrate success and failure without real delays.
+POST creates a pending payment. PATCH with `{"status":"processing"}` starts background processing and immediately returns the processing payment. Processing awaits a three-second timer and then completes. There is no random success probability. An exception during the asynchronous operation marks the payment failed and is logged. Tests inject a controlled wait function to demonstrate success and failure without real delays.
 
 Only the simulated processor can move processing payments to completed or failed. PATCH is restricted to starting a pending payment with `{"status":"processing"}`; all other known status requests return `409`. Repository transitions check the expected status and allowed lifecycle transition in one synchronous operation, preventing stale writes and duplicate processing in this single process.
 
-PATCH is part of this simulation and has no authentication. In normal use, POST has already started processing, so manually setting `processing` will return `409`.
+PATCH has no authentication in this simulation. Repeated or simultaneous attempts to start the same payment return `409` once processing has been claimed. Poll GET to observe completion or failure. Without PATCH, the payment remains pending.
 
 ## Errors and logging
 

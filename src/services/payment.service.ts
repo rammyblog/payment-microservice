@@ -48,7 +48,7 @@ export class PaymentService {
       }
       return existing;
     }
-    // Lookup and creation are synchronous, before background processing can yield.
+    // Lookup and creation are synchronous, so retries cannot create duplicates.
     const now = new Date().toISOString();
     const payment = this.repository.create(
       {
@@ -61,9 +61,6 @@ export class PaymentService {
       },
       idempotencyKey,
     );
-    void this.processPayment(payment.id).catch(() => {
-      logger.error("payment.processing_error", { paymentId: payment.id });
-    });
     return payment;
   }
 

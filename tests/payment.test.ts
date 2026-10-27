@@ -70,9 +70,21 @@ describe("payment repository", () => {
 });
 
 describe("payment service", () => {
+  test("creation retries keep a payment pending until explicitly started", () => {
+    const { service, wait } = setup();
+    const payment = service.createPayment(100, "NGN", "order-1");
+    expect(service.createPayment(100, "NGN", "order-1")).toEqual(payment);
+    expect(service.getPayment(payment.id).status).toBe("pending");
+    expect(wait).not.toHaveBeenCalled();
+    expect(() => service.updateStatus(payment.id, "completed")).toThrow(
+      expect.objectContaining({ status: 409 }),
+    );
+  });
+
   test("reuses a keyed payment during processing and after completion", async () => {
     const { service, wait, resolve } = setup();
     const payment = service.createPayment(100, "NGN", "order-1");
+    service.updateStatus(payment.id, "processing");
     expect(service.createPayment(100, "NGN", "order-1")).toMatchObject({
       id: payment.id,
       status: "processing",
@@ -92,7 +104,7 @@ describe("payment service", () => {
     expect(() => service.createPayment(200, "NGN", "order-1")).toThrow(
       expect.objectContaining({ status: 409, code: "IDEMPOTENCY_CONFLICT" }),
     );
-    expect(wait).toHaveBeenCalledTimes(1);
+    expect(wait).not.toHaveBeenCalled();
   });
 
   test("new keys create separate payments", () => {
@@ -101,7 +113,7 @@ describe("payment service", () => {
       service.createPayment(100, "NGN", key),
     );
     expect(new Set(payments.map((payment) => payment.id)).size).toBe(2);
-    expect(wait).toHaveBeenCalledTimes(2);
+    expect(wait).not.toHaveBeenCalled();
   });
 
   test.each(["", "   ", "a".repeat(201)])(
@@ -115,19 +127,20 @@ describe("payment service", () => {
     },
   );
 
-  test("creates a pending snapshot and starts processing without waiting", () => {
+  test("creates a pending payment without starting processing", () => {
     const { service, wait } = setup();
     const payment = service.createPayment(150000, "NGN", "order-1");
     expect(payment).toMatchObject({ ...payload, status: "pending" });
     expect(payment.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(new Date(payment.createdAt).toISOString()).toBe(payment.createdAt);
-    expect(service.getPayment(payment.id).status).toBe("processing");
-    expect(wait).toHaveBeenCalledTimes(1);
+    expect(service.getPayment(payment.id).status).toBe("pending");
+    expect(wait).not.toHaveBeenCalled();
   });
 
   test("completes after the asynchronous operation finishes", async () => {
     const { service, resolve } = setup();
     const payment = service.createPayment(100, "NGN", "order-1");
+    service.updateStatus(payment.id, "processing");
     resolve();
     await Promise.resolve();
     expect(service.getPayment(payment.id).status).toBe("completed");
@@ -136,6 +149,7 @@ describe("payment service", () => {
   test("records a failure when the asynchronous operation rejects", async () => {
     const { service, reject } = setup();
     const payment = service.createPayment(100, "NGN", "order-1");
+    service.updateStatus(payment.id, "processing");
     reject(new Error("simulated service error"));
     await Promise.resolve();
     expect(service.getPayment(payment.id).status).toBe("failed");
@@ -145,6 +159,7 @@ describe("payment service", () => {
   test("does not start processing twice", async () => {
     const { service, wait } = setup();
     const payment = service.createPayment(100, "NGN", "order-1");
+    service.updateStatus(payment.id, "processing");
     await Promise.all([
       service.processPayment(payment.id),
       service.processPayment(payment.id),
@@ -157,6 +172,7 @@ describe("payment service", () => {
     async (status) => {
       const { service, resolve } = setup();
       const payment = service.createPayment(100, "NGN", "order-1");
+      service.updateStatus(payment.id, "processing");
       expect(() => service.updateStatus(payment.id, status)).toThrow(
         expect.objectContaining({ status: 409 }),
       );
@@ -172,22 +188,15 @@ describe("payment service", () => {
   test("rejects backward and repeated transitions", () => {
     const { service } = setup();
     const payment = service.createPayment(100, "NGN", "order-1");
+    service.updateStatus(payment.id, "processing");
     expect(() => service.updateStatus(payment.id, "pending")).toThrow();
     expect(() => service.updateStatus(payment.id, "processing")).toThrow();
   });
 
-  test("can manually start a pending payment", () => {
-    const { repository, service, wait } = setup();
-    const now = new Date().toISOString();
-    repository.create({
-      id: "seed",
-      amountMinor: 1,
-      currency: "NGN",
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    });
-    expect(service.updateStatus("seed", "processing").status).toBe(
+  test("starts a normally created pending payment", () => {
+    const { service, wait } = setup();
+    const payment = service.createPayment(100, "NGN", "order-1");
+    expect(service.updateStatus(payment.id, "processing").status).toBe(
       "processing",
     );
     expect(wait).toHaveBeenCalledTimes(1);
@@ -207,7 +216,7 @@ describe("payment service", () => {
     payment.status = "failed";
     const copy = service.getPayment(payment.id);
     copy.status = "completed";
-    expect(service.getPayment(payment.id).status).toBe("processing");
+    expect(service.getPayment(payment.id).status).toBe("pending");
   });
 });
 
@@ -225,23 +234,36 @@ describe("payment HTTP API", () => {
     },
   );
 
-  test("PATCH can start a seeded pending payment", async () => {
-    const { app, repository, wait } = setup();
-    const now = new Date().toISOString();
-    repository.create({
-      id: "seed",
-      amountMinor: 1,
-      currency: "NGN",
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    });
-    const res = await request(app)
-      .patch("/api/payments/seed/status")
-      .send({ status: "processing" });
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe("processing");
+  test("POST then PATCH starts processing once and GET observes completion", async () => {
+    const { app, wait, resolve } = setup();
+    const created = await request(app)
+      .post("/api/payments")
+      .set("Idempotency-Key", "order-1")
+      .send(payload);
+    expect(created.status).toBe(202);
+    expect(created.body.status).toBe("pending");
+    expect(wait).not.toHaveBeenCalled();
+    const path = `/api/payments/${created.body.id}`;
+    expect((await request(app).get(path)).body.status).toBe("pending");
+    const starts = await Promise.all(
+      [1, 2].map(() =>
+        request(app).patch(`${path}/status`).send({ status: "processing" }),
+      ),
+    );
+    expect(starts.map((res) => res.status).sort()).toEqual([200, 409]);
+    expect(starts.find((res) => res.status === 200)?.body.status).toBe(
+      "processing",
+    );
     expect(wait).toHaveBeenCalledTimes(1);
+    resolve();
+    expect((await request(app).get(path)).body.status).toBe("completed");
+    expect(
+      (
+        await request(app)
+          .patch(`${path}/status`)
+          .send({ status: "processing" })
+      ).status,
+    ).toBe(409);
   });
 
   test("matching concurrent retries reuse the payment and changed details conflict", async () => {
@@ -257,7 +279,7 @@ describe("payment HTTP API", () => {
     expect(responses.map((res) => res.status)).toEqual([202, 202]);
     expect(responses[0].body.id).toBe(responses[1].body.id);
     expect(responses[0].headers.location).toBe(responses[1].headers.location);
-    expect(wait).toHaveBeenCalledTimes(1);
+    expect(wait).not.toHaveBeenCalled();
     const conflict = await request(app)
       .post("/api/payments")
       .set("Idempotency-Key", "order-1")
@@ -314,7 +336,7 @@ describe("payment HTTP API", () => {
     const payment = service.createPayment(100, "NGN", "order-1");
     const res = await request(app).get(`/api/payments/${payment.id}`);
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ id: payment.id, status: "processing" });
+    expect(res.body).toMatchObject({ id: payment.id, status: "pending" });
   });
 
   test("GET and PATCH return 404 for unknown IDs", async () => {
@@ -332,6 +354,7 @@ describe("payment HTTP API", () => {
   test("PATCH validates input and cannot override the processor", async () => {
     const { app, service } = setup();
     const payment = service.createPayment(100, "NGN", "order-1");
+    service.updateStatus(payment.id, "processing");
     const path = `/api/payments/${payment.id}/status`;
     expect(
       (await request(app).patch(path).send({ status: "unknown" })).status,
