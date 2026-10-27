@@ -1,5 +1,12 @@
 import { Payment, PaymentStatus } from "../types/payment";
 
+const transitions: Record<PaymentStatus, readonly PaymentStatus[]> = {
+  pending: ["processing"],
+  processing: ["completed", "failed"],
+  completed: [],
+  failed: [],
+};
+
 export class PaymentRepository {
   private readonly payments = new Map<string, Payment>();
   private readonly idempotencyKeys = new Map<string, string>();
@@ -21,10 +28,10 @@ export class PaymentRepository {
     return payment ? { ...payment } : undefined;
   }
 
-  updateStatus(id: string, status: PaymentStatus): Payment | undefined {
+  transition(id: string, expectedStatus: PaymentStatus, nextStatus: PaymentStatus): Payment | undefined {
     const payment = this.payments.get(id);
-    if (!payment) return undefined;
-    const updated = { ...payment, status, updatedAt: new Date().toISOString() };
+    if (!payment || payment.status !== expectedStatus || !transitions[expectedStatus].includes(nextStatus)) return undefined;
+    const updated = { ...payment, status: nextStatus, updatedAt: new Date().toISOString() };
     this.payments.set(id, updated);
     return { ...updated };
   }

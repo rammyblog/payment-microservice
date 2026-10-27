@@ -32,7 +32,7 @@ npm start
 | --- | --- | --- |
 | POST | `/api/payments` | Create a payment; return `202` and a `Location` header |
 | GET | `/api/payments/:id` | Return the payment and current status |
-| PATCH | `/api/payments/:id/status` | Manually update a simulated payment's status |
+| PATCH | `/api/payments/:id/status` | Start a pending payment (administrative simulation) |
 | GET | `/health` | Return service health |
 
 Create a payment:
@@ -40,12 +40,13 @@ Create a payment:
 ```sh
 curl -i -X POST http://localhost:8900/api/payments \
   -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: order-123' \
   -d '{"amountMinor":150000,"currency":"NGN"}'
 ```
 
 `amountMinor` must be a positive safe integer in kobo; `150000` represents NGN 1,500. `currency` must be `NGN`. Unknown body fields are rejected.
 
-To retry safely, include an optional `Idempotency-Key` header, such as `Idempotency-Key: order-123`. Keys must be nonblank and at most 200 characters. Repeating the same key and payment details returns the existing payment with its current status, `202`, and the same `Location` header, without starting processing again. Reusing a key with different details returns `409` with code `IDEMPOTENCY_CONFLICT`. A new key, or omitting the header, creates a new payment.
+Every creation request requires an `Idempotency-Key` header, such as `Idempotency-Key: order-123`. Keys must be nonblank and at most 200 characters. Repeating the same key and payment details returns the existing payment with its current status, `202`, and the same `Location` header, without starting processing again. Reusing a key with different details returns `409` with code `IDEMPOTENCY_CONFLICT`. A new key creates a new payment. Missing or invalid keys return `400`.
 
 Keys are shared across this service instance and kept in memory without expiry. They are lost on restart. Lookup and creation happen synchronously, so overlapping retries cannot create duplicates within this single process.
 
@@ -57,12 +58,12 @@ Retrieve a payment using the ID returned by POST:
 curl http://localhost:8900/api/payments/<id>
 ```
 
-Manually simulate failure while a payment is processing:
+Start a pending payment through the administrative simulation endpoint (normally POST has already started it, so this returns `409`):
 
 ```sh
 curl -i -X PATCH http://localhost:8900/api/payments/<id>/status \
   -H 'Content-Type: application/json' \
-  -d '{"status":"failed"}'
+  -d '{"status":"processing"}'
 ```
 
 Check service health:
@@ -80,7 +81,7 @@ pending → processing → completed
 
 Processing awaits a three-second timer and then completes. There is no random success probability. An exception during the asynchronous operation marks the payment failed and is logged. Tests inject a controlled wait function to demonstrate success and failure without real delays.
 
-PATCH follows the same lifecycle: pending can become processing; processing can become completed or failed. Repeated, backward, and terminal-state changes return `409`. The background task checks the current status after waiting, so a manual completion or failure is preserved. These checks and writes happen synchronously, preventing duplicate processing attempts in this single process.
+Only the simulated processor can move processing payments to completed or failed. PATCH is restricted to starting a pending payment with `{"status":"processing"}`; all other known status requests return `409`. Repository transitions check the expected status and allowed lifecycle transition in one synchronous operation, preventing stale writes and duplicate processing in this single process.
 
 PATCH is part of this simulation and has no authentication. In normal use, POST has already started processing, so manually setting `processing` will return `409`.
 
@@ -128,7 +129,7 @@ npm run build
 npm test
 ```
 
-Type-checking includes application and test files. Tests cover creation, validation, retrieval, status changes, async completion/failure, duplicate processing prevention, manual-update coordination, and error responses. No test waits three seconds. TypeScript is pinned to 5.9.3 for ts-jest compatibility. No linter is configured.
+Type-checking includes application and test files. Tests cover creation, validation, retrieval, status changes, async completion/failure, duplicate processing prevention, processor ownership, conditional repository transitions, required idempotency keys, and error responses. No test waits three seconds. TypeScript is pinned to 5.9.3 for ts-jest compatibility. No linter is configured.
 
 Supertest needs permission to open a temporary local listener. Environments that reject local sockets with `EPERM` cannot run the HTTP tests. Service tests can run independently:
 
