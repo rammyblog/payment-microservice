@@ -1,4 +1,4 @@
-import { Payment, PaymentStatus } from "../types/payment";
+import type { Payment, PaymentStatus } from "../types/payment";
 
 const transitions: Record<PaymentStatus, readonly PaymentStatus[]> = {
   pending: ["processing"],
@@ -28,10 +28,23 @@ export class PaymentRepository {
     return payment ? { ...payment } : undefined;
   }
 
-  transition(id: string, expectedStatus: PaymentStatus, nextStatus: PaymentStatus): Payment | undefined {
+  transition(
+    id: string,
+    expectedStatus: PaymentStatus,
+    nextStatus: PaymentStatus,
+  ): Payment | undefined {
     const payment = this.payments.get(id);
-    if (!payment || payment.status !== expectedStatus || !transitions[expectedStatus].includes(nextStatus)) return undefined;
-    const updated = { ...payment, status: nextStatus, updatedAt: new Date().toISOString() };
+    if (
+      !payment ||
+      payment.status !== expectedStatus ||
+      !transitions[expectedStatus].includes(nextStatus)
+    )
+      return undefined;
+    const updated = {
+      ...payment,
+      status: nextStatus,
+      updatedAt: new Date().toISOString(),
+    };
     this.payments.set(id, updated);
     return { ...updated };
   }

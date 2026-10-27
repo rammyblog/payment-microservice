@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
-import { PaymentRepository } from "../repositories/payment.repo";
-import { Payment, PaymentStatus } from "../types/payment";
+import type { PaymentRepository } from "../repositories/payment.repo";
+import type { Payment, PaymentStatus } from "../types/payment";
 import { ApiError } from "../utils/errors";
 import { logger } from "../utils/logger";
 
@@ -23,7 +23,11 @@ export class PaymentService {
     ) {
       throw new ApiError(400, "VALIDATION_ERROR", "Invalid payment parameters");
     }
-    if (typeof idempotencyKey !== "string" || !idempotencyKey.trim() || idempotencyKey.length > 200) {
+    if (
+      typeof idempotencyKey !== "string" ||
+      !idempotencyKey.trim() ||
+      idempotencyKey.length > 200
+    ) {
       throw new ApiError(
         400,
         "VALIDATION_ERROR",

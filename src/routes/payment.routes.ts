@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { PaymentService } from "../services/payment.service";
+import type { PaymentService } from "../services/payment.service";
 
 const createPaymentSchema = z
   .object({
@@ -22,7 +22,12 @@ export function createPaymentRouter(service: PaymentService): Router {
     const payment = service.createPayment(
       body.amountMinor,
       body.currency,
-      z.string().min(1).max(200).refine(key => key.trim().length > 0).parse(req.get("Idempotency-Key")),
+      z
+        .string()
+        .min(1)
+        .max(200)
+        .refine((key) => key.trim().length > 0)
+        .parse(req.get("Idempotency-Key")),
     );
     res.status(202).location(`/api/payments/${payment.id}`).json(payment);
   });

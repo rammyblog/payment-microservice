@@ -127,9 +127,14 @@ Routes validate input, the service handles payment behavior, and the repository 
 npm run typecheck
 npm run build
 npm test
+npm run lint
 ```
 
-Type-checking includes application and test files. Tests cover creation, validation, retrieval, status changes, async completion/failure, duplicate processing prevention, processor ownership, conditional repository transitions, required idempotency keys, and error responses. No test waits three seconds. TypeScript is pinned to 5.9.3 for ts-jest compatibility. No linter is configured.
+Type-checking includes application and test files. Tests cover creation, validation, retrieval, status changes, async completion/failure, duplicate processing prevention, processor ownership, conditional repository transitions, required idempotency keys, and error responses. No test waits three seconds. TypeScript is pinned to 5.9.3 for ts-jest compatibility.
+
+Biome checks formatting, imports, and recommended lint rules across the project's TypeScript, JavaScript, and JSON files, including tests and editor settings. Generated output, dependencies, and the npm lockfile are excluded. Run `npm run lint:fix` to apply safe fixes. Markdown and environment files are outside this lint setup.
+
+For VS Code, install the recommended **Biome** extension (`biomejs.biome`). Workspace settings enable formatting, safe lint fixes, and import organization when you explicitly save a supported file.
 
 Supertest needs permission to open a temporary local listener. Environments that reject local sockets with `EPERM` cannot run the HTTP tests. Service tests can run independently:
 
